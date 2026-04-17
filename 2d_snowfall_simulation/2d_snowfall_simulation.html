@@ -167,7 +167,7 @@
                     angle: f32,
                     power: f32,
                     gust: f32,
-                    padding: f32,
+                    delta: f32,
                 }
                 @group(0) @binding(0) var<uniform> p: Params;
 
@@ -190,6 +190,7 @@
                     let rad = p.angle * 3.14159 / 180.0;
                     let wind_dir = vec2f(cos(rad), sin(rad));
                     let gust_val = (sin(p.time * 1.5) * cos(p.time * 0.5) * 0.5 + 0.5) * p.gust * 0.001;
+                    let dt = p.delta * 60.0; // Normalized to 60fps base
                     
                     // Organic sway and swirls from original logic
                     let sway = sin(p.time + s.pos.y) * 0.001;
@@ -211,12 +212,12 @@
                     }
 
                     // Update physics
-                    s.pos += wind_force * (1.1 - s.size * 10.0);
-                    s.pos.x += s.vel.x + sway + swirlX;
-                    s.pos.y += s.momY - (s.vel.y * 0.5) - swirlY;
+                    s.pos += wind_force * (1.1 - s.size * 10.0) * dt;
+                    s.pos.x += (s.vel.x + sway + swirlX) * dt;
+                    s.pos.y += (s.momY - (s.vel.y * 0.5) - swirlY) * dt;
                     
-                    s.vel.x *= 0.95;
-                    s.momY *= 0.95;
+                    s.vel.x *= pow(0.95, dt);
+                    s.momY *= pow(0.95, dt);
 
                     // Bounds wrapping
                     let m = 1.4;
@@ -338,14 +339,20 @@
             window.addEventListener('mouseup', () => mouse.down = false);
 
             const pData = new Float32Array(8);
+            let lastTime = performance.now();
             function frame() {
+                const now = performance.now();
+                const delta = (now - lastTime) / 1000;
+                lastTime = now;
+
                 const count = Math.min(max, parseInt(ui.count.value) || 0);
-                pData[0] = performance.now() / 1000;
+                pData[0] = now / 1000;
                 pData[1] = mouse.x; pData[2] = mouse.y;
                 pData[3] = mouse.down ? 1 : 0;
                 pData[4] = parseFloat(ui.angle.value) || 0;
                 pData[5] = parseFloat(ui.power.value) || 0;
                 pData[6] = parseFloat(ui.gust.value) || 0;
+                pData[7] = delta;
                 device.queue.writeBuffer(pBuf, 0, pData);
 
                 const encoder = device.createCommandEncoder();
