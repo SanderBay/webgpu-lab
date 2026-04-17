@@ -206,8 +206,8 @@
                         if (d < 0.3 && d > 0.0001) {
                             let f = (0.3 - d) / 0.3;
                             let push = normalize(diff) * f * f * 0.01;
-                            s.vel.x += push.x;
-                            s.momY += push.y;
+                            s.vel.x += push.x * dt;
+                            s.momY += push.y * dt;
                         }
                     }
 
@@ -342,7 +342,7 @@
             let lastTime = performance.now();
             function frame() {
                 const now = performance.now();
-                const delta = (now - lastTime) / 1000;
+                const delta = Math.min((now - lastTime) / 1000, 0.1); // Cap delta to prevent huge jumps
                 lastTime = now;
 
                 const count = Math.min(max, parseInt(ui.count.value) || 0);
