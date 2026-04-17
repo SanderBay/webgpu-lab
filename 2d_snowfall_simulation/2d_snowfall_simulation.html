@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>WebGPU Weather Sim</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            height: 100%;
+            background: #05070a;
+            font-family: 'Inter', -apple-system, sans-serif;
+            overflow: hidden;
+            color: white;
+        }
+
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(15, 20, 25, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            padding: 24px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 10;
+            width: 280px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+            user-select: none;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .control-group label {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        input[type="range"] {
+            flex: 1;
+            accent-color: #4f46e5;
+            cursor: ew-resize;
+        }
+
+        input[type="number"] {
+            width: 70px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 6px;
+            border-radius: 6px;
+            font-size: 13px;
+            outline: none;
+        }
+
+        input[type="number"]:focus {
+            border-color: #4f46e5;
+        }
+
+        canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            z-index: 1;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="ui-panel">
+        <div class="control-group">
+            <label>Snow Density</label>
+            <div class="row">
+                <input type="range" id="count-range" min="100" max="100000" value="1000">
+                <input type="number" id="count-number" value="1000">
+            </div>
+        </div>
+        <div class="control-group">
+            <label>Wind Direction (Deg)</label>
+            <div class="row">
+                <input type="range" id="angle-range" min="0" max="360" value="210">
+                <input type="number" id="angle-number" value="210">
+            </div>
+        </div>
+        <div class="control-group">
+            <label>Wind Power</label>
+            <div class="row">
+                <input type="range" id="strength-range" min="0" max="100" value="15" step="0.1">
+                <input type="number" id="strength-number" value="15" step="0.1">
+            </div>
+        </div>
+        <div class="control-group">
+            <label>Gust Surge</label>
+            <div class="row">
+                <input type="range" id="gust-range" min="0" max="100" value="5" step="0.1">
+                <input type="number" id="gust-number" value="5" step="0.1">
+            </div>
+        </div>
+    </div>
+    <canvas id="gpu-canvas"></canvas>
+
+    <script>
+        // Global error catcher for UI feedback
+        window.addEventListener('error', (e) => {
+            const errDiv = document.createElement('div');
+            errDiv.style.position = 'absolute';
+            errDiv.style.top = '10px';
+            errDiv.style.right = '10px';
+            errDiv.style.background = 'red';
+            errDiv.style.color = 'white';
+            errDiv.style.padding = '10px';
+            errDiv.style.zIndex = '9999';
+            errDiv.textContent = 'JS Error: ' + e.message;
+            document.body.appendChild(errDiv);
+        });
+    </script>
+    <script type="module">
+        async function main() {
+            const adapter = await navigator.gpu?.requestAdapter();
+            const device = await adapter?.requestDevice();
+            if (!device) return;
+
+            device.addEventListener('uncapturederror', (event) => {
+                const errDiv = document.createElement('div');
+                errDiv.style.position = 'absolute';
+                errDiv.style.top = '50px';
+                errDiv.style.right = '10px';
+                errDiv.style.background = 'darkred';
+                errDiv.style.color = 'white';
+                errDiv.style.padding = '10px';
+                errDiv.style.zIndex = '9999';
+                errDiv.textContent = 'WebGPU Error: ' + event.error.message;
+                document.body.appendChild(errDiv);
+            });
+
+            const canvas = document.getElementById("gpu-canvas");
+            const context = canvas.getContext("webgpu");
+            const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+
+            const computeModule = device.createShaderModule({
+                code: `
+                struct Params {
+                    time: f32,
+                    mouseX: f32,
+                    mouseY: f32,
+                    isPressed: f32,
+                    angle: f32,
+                    power: f32,
+                    gust: f32,
+                    padding: f32,
+                }
+                @group(0) @binding(0) var<uniform> p: Params;
+
+                struct Snow {
+                    pos: vec2f,
+                    vel: vec2f,
+                    size: f32,
+                    momY: f32,
+                }
+                @group(0) @binding(1) var<storage, read_write> snow: array<Snow>;
+
+                @compute @workgroup_size(64)
+                fn cs_main(@builtin(global_invocation_id) id_vec: vec3u) {
+                    let i = id_vec.x;
+                    if (i >= arrayLength(&snow)) { return; }
+
+                    var s = snow[i];
+                    
+                    // Wind calculations
+                    let rad = p.angle * 3.14159 / 180.0;
+                    let wind_dir = vec2f(cos(rad), sin(rad));
+                    let gust_val = (sin(p.time * 1.5) * cos(p.time * 0.5) * 0.5 + 0.5) * p.gust * 0.001;
+                    
+                    // Organic sway and swirls from original logic
+                    let sway = sin(p.time + s.pos.y) * 0.001;
+                    let swirlX = sin(s.pos.y * 10.0 + p.time) * 0.001;
+                    let swirlY = cos(s.pos.x * 10.0 + p.time) * 0.0005;
+
+                    let wind_force = wind_dir * (p.power * 0.0002 + gust_val);
+
+                    // Mouse
+                    if (p.isPressed == 1.0) {
+                        let diff = s.pos - vec2f(p.mouseX, p.mouseY);
+                        let d = length(diff);
+                        if (d < 0.3 && d > 0.0001) {
+                            let f = (0.3 - d) / 0.3;
+                            let push = normalize(diff) * f * f * 0.01;
+                            s.vel.x += push.x;
+                            s.momY += push.y;
+                        }
+                    }
+
+                    // Update physics
+                    s.pos += wind_force * (1.1 - s.size * 10.0);
+                    s.pos.x += s.vel.x + sway + swirlX;
+                    s.pos.y += s.momY - (s.vel.y * 0.5) - swirlY;
+                    
+                    s.vel.x *= 0.95;
+                    s.momY *= 0.95;
+
+                    // Bounds wrapping
+                    let m = 1.4;
+                    let seed = f32(i) + p.time;
+                    let rnd = fract(sin(seed) * 43758.5453) * 2.8 - 1.4;
+
+                    // X-axis wrapping
+                    if (s.pos.x < -m) {
+                        s.pos.x = m;
+                        s.pos.y = rnd;
+                        s.vel.x = 0.0; s.momY = 0.0;
+                    } else if (s.pos.x > m) {
+                        s.pos.x = -m;
+                        s.pos.y = rnd;
+                        s.vel.x = 0.0; s.momY = 0.0;
+                    }
+
+                    // Y-axis wrapping
+                    if (s.pos.y < -m) {
+                        s.pos.y = m;
+                        s.pos.x = fract(sin(seed * 1.5) * 43758.5453) * 2.8 - 1.4;
+                        s.vel.x = 0.0; s.momY = 0.0;
+                    } else if (s.pos.y > m) {
+                        s.pos.y = -m;
+                        s.pos.x = fract(sin(seed * 1.5) * 43758.5453) * 2.8 - 1.4;
+                        s.vel.x = 0.0; s.momY = 0.0;
+                    }
+
+                    snow[i] = s;
+                }`
+            });
+
+            const renderModule = device.createShaderModule({
+                code: `
+                struct Snow {
+                    pos: vec2f,
+                    vel: vec2f,
+                    size: f32,
+                    momY: f32,
+                }
+                @group(0) @binding(1) var<storage, read> snow: array<Snow>;
+
+                struct Out {
+                    @builtin(position) p: vec4f,
+                    @location(0) uv: vec2f,
+                }
+
+                @vertex
+                fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> Out {
+                    let quad = array<vec2f, 6>(
+                        vec2f(-1, -1), vec2f(1, -1), vec2f(-1, 1),
+                        vec2f(-1, 1), vec2f(1, -1), vec2f(1, 1)
+                    );
+                    let f = snow[ii];
+                    var o: Out;
+                    o.p = vec4f(f.pos + (quad[vi] * f.size), 0.0, 1.0);
+                    o.uv = quad[vi];
+                    return o;
+                }
+
+                @fragment
+                fn fs(i: Out) -> @location(0) vec4f {
+                    let d = length(i.uv);
+                    let a = 1.0 - smoothstep(0.4, 1.0, d);
+                    return vec4f(0.9, 0.95, 1.0, a);
+                }`
+            });
+
+            const cPipe = device.createComputePipeline({ layout: 'auto', compute: { module: computeModule, entryPoint: 'cs_main' } });
+            const rPipe = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: { module: renderModule, entryPoint: 'vs' },
+                fragment: {
+                    module: renderModule, entryPoint: 'fs',
+                    targets: [{
+                        format: presentationFormat, blend: {
+                            color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+                            alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }
+                        }
+                    }]
+                }
+            });
+
+            const max = 100000;
+            const data = new Float32Array(max * 6);
+            for (let i = 0; i < max; i++) {
+                const o = i * 6;
+                data[o + 0] = Math.random() * 2.8 - 1.4;
+                data[o + 1] = Math.random() * 2.8 - 1.4;
+                data[o + 2] = 0;
+                data[o + 3] = Math.random() * 0.004 + 0.002;
+                data[o + 4] = Math.random() * 0.004 + 0.002;
+                data[o + 5] = 0;
+            }
+
+            const sBuf = device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(sBuf, 0, data);
+            const pBuf = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            const cBG = device.createBindGroup({ layout: cPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: pBuf } }, { binding: 1, resource: { buffer: sBuf } }] });
+            const rBG = device.createBindGroup({ layout: rPipe.getBindGroupLayout(0), entries: [{ binding: 1, resource: { buffer: sBuf } }] });
+
+            function sync(id) {
+                const r = document.getElementById(id + '-range');
+                const n = document.getElementById(id + '-number');
+                r.oninput = () => n.value = r.value;
+                n.oninput = () => r.value = n.value;
+                return n;
+            }
+
+            const ui = { count: sync('count'), angle: sync('angle'), power: sync('strength'), gust: sync('gust') };
+            let mouse = { x: 0, y: 0, down: false };
+
+            window.addEventListener('mousemove', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                mouse.y = (1 - (e.clientY - rect.top) / rect.height) * 2 - 1;
+            });
+            window.addEventListener('mousedown', (e) => { if (e.target.id === 'gpu-canvas') mouse.down = true; });
+            window.addEventListener('mouseup', () => mouse.down = false);
+
+            const pData = new Float32Array(8);
+            function frame() {
+                const count = Math.min(max, parseInt(ui.count.value) || 0);
+                pData[0] = performance.now() / 1000;
+                pData[1] = mouse.x; pData[2] = mouse.y;
+                pData[3] = mouse.down ? 1 : 0;
+                pData[4] = parseFloat(ui.angle.value) || 0;
+                pData[5] = parseFloat(ui.power.value) || 0;
+                pData[6] = parseFloat(ui.gust.value) || 0;
+                device.queue.writeBuffer(pBuf, 0, pData);
+
+                const encoder = device.createCommandEncoder();
+                const passC = encoder.beginComputePass();
+                passC.setPipeline(cPipe);
+                passC.setBindGroup(0, cBG);
+                passC.dispatchWorkgroups(Math.ceil(count / 64));
+                passC.end();
+
+                const passR = encoder.beginRenderPass({
+                    colorAttachments: [{
+                        view: context.getCurrentTexture().createView(),
+                        clearValue: { r: 0.05, g: 0.1, b: 0.2, a: 1.0 }, // Distinct visible dark blue
+                        loadOp: 'clear', storeOp: 'store'
+                    }]
+                });
+                passR.setPipeline(rPipe);
+                passR.setBindGroup(0, rBG);
+                passR.draw(6, count);
+                passR.end();
+
+                device.queue.submit([encoder.finish()]);
+                requestAnimationFrame(frame);
+            }
+
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            context.configure({ device, format: presentationFormat, alphaMode: 'premultiplied' });
+
+            const obs = new ResizeObserver(() => {
+                if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                    context.configure({ device, format: presentationFormat, alphaMode: 'premultiplied' });
+                }
+            });
+            obs.observe(document.body);
+            frame();
+        }
+        main();
+    </script>
+</body>
+
+</html>
