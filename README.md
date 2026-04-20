@@ -14,4 +14,4 @@ Simulation up to 100,000 snowflakes with mouse interaction. Entirely calculated 
   ![Snowfall Demo](./2d_snowfall_simulation/assets/2d_snowfall_small.gif)
 </details>
 
-[Live Demo](https://sanderbay.github.io/webgpu-lab/2d_snowfall_simulation/2d_snowfall_simulation.html)
+[Live Demo](https://sanderbay.github.io/webgpu-lab/2d_snowfall_simulation/index.html)
