@@ -5,11 +5,11 @@ async function main() {
     const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
 
     const computeModule = device.createShaderModule({
-        code: await loadShader('../shaders/compute.wgsl'),
+        code: await loadShader('./shaders/compute.wgsl'),
     });
 
     const renderModule = device.createShaderModule({
-        code: await loadShader('../shaders/raster.wgsl'),
+        code: await loadShader('./shaders/raster.wgsl'),
     });
 
     const cPipe = device.createComputePipeline({ 

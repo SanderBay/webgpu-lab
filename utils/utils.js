@@ -27,9 +27,9 @@ async function simpleWInit() {
                 document.body.appendChild(errDiv);
     });
 
-    const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('webgpu-canvas'));
+    const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('gpu-canvas'));
     if (!canvas) {
-        throw new Error("Canvas element with id 'webgpu-canvas' not found");
+        throw new Error("Canvas element with id 'gpu-canvas' not found");
     }
 
     const context = canvas.getContext('webgpu');
@@ -45,7 +45,7 @@ async function simpleWInit() {
         alphaMode: 'premultiplied'
     });
 
-    return {device, context, canvas, presentationFormat};
+    return {device, context, canvas};
 }
 
 /**
